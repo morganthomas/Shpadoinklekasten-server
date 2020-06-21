@@ -24,17 +24,22 @@ instance ZettelEditor (Action IO) where
     , "title" =: String t
     , "threads" =: Array [] ]
 
-  -- TODO: update thread list of each category
-  saveNewThread i t ls cs = void $ insert "thread"
-    [ "id" =: String (unThreadId i)
-    , "title" =: String t
-    , "comments" =: Array []
-    , "links" =: Array
-      ((\l -> Doc
-              [ "to" =: String (unThreadId (linkTo l))
-              , "description" =: String (linkDescription l) ])
-        <$> ls)
-    , "categorization" =: Array (String . unCategoryId <$> cs) ]
+
+  saveNewThread i t ls cs = do
+    insert "thread"
+      [ "id" =: String (unThreadId i)
+      , "title" =: String t
+      , "comments" =: Array []
+      , "links" =: Array
+        ((\l -> Doc
+                [ "to" =: String (unThreadId (linkTo l))
+                , "description" =: String (linkDescription l) ])
+         <$> ls)
+      , "categorization" =: Array (String . unCategoryId <$> cs) ]
+
+    modify (select [ "id" =: Doc [ "$in" =: (String . unCategoryId <$> cs) ] ] "category")
+      [ "$push" =: Doc [ "threads" =: String (unThreadId i) ] ]
+
 
   saveNewComment tid t = modify (select [ "id" =: String (unThreadId tid) ] "thread")
                          [ "$push" =: Doc [ "comments" =: String t ] ]
