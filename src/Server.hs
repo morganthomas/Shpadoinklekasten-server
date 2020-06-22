@@ -25,7 +25,7 @@ import           Persist
 
 api :: Pipe -> Server API
 api conn = hoistServer (Proxy @API) (liftIO . access conn UnconfirmedWrites "s11kasten")
-           (saveNewCategory :<|> saveNewThread :<|> saveNewComment :<|> getDatabase)
+           (saveNewCategory :<|> saveNewThread :<|> saveNewComment :<|> getDatabase :<|> login)
 
 
 app :: Text -> Server SPA
