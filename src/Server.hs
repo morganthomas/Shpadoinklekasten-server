@@ -21,6 +21,7 @@ import           Shpadoinkle (JSM)
 import           Types
 import           View
 import           Persist
+import           SHA256
 
 
 api :: Pipe -> Server API
@@ -41,4 +42,4 @@ main = do
   js <- readFile "./assets/all.js"
   conn <- connect (Host "localhost" (PortNumber 27017))
   putStrLn "listening on port 8080"
-  run 8080 (server (pack js) conn)
+  run 8080 (server (sha256_js <> pack js) conn)

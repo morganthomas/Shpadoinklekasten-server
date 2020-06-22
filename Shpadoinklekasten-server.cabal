@@ -18,6 +18,7 @@ extra-source-files:  CHANGELOG.md
 executable server
   main-is:             Server.hs
   other-modules:       Persist
+                       SHA256
   build-depends:       base ^>=4.12.0.0
                      , aeson
                      , containers ^>=0.6.0.0
@@ -26,6 +27,7 @@ executable server
                      , mongoDB
                      , network
                      , random ^>=1.1
+                     , raw-strings-qq
                      , servant ^>=0.16
                      , servant-server ^>=0.16
                      , text ^>=1.2.0.0

@@ -22,7 +22,7 @@ let
 
   Shpadoinklekasten-lib-src = builtins.fetchGit {
     url    = ssh://git@github.com/morganthomas/Shpadoinklekasten-lib.git;
-    rev    = "4b8ff5461d12ec326c3603eec60c15ac2075ee0a";
+    rev    = "ddff687f8aa7830fc00cc8f9fa81e5859b351adb";
     ref    = "master";
   };
 
@@ -63,6 +63,7 @@ let
     jsaddle = hsuper.jsaddle;
     mongoDB = hsuper.mongoDB;
     network = hsuper.network;
+    raw-strings-qq = hsuper.raw-strings-qq;
     Shpadoinkle-continuations = hsuper.Shpadoinkle-continuations;
     Shpadoinklekasten-lib = hself.callCabal2nix "Shpadoinklekasten-lib" "${Shpadoinklekasten-lib-src}" {};    transformers = hsuper.transformers;
     unliftio = hsuper.unliftio;

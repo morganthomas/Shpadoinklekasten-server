@@ -77,7 +77,7 @@ instance ZettelEditor (Action IO) where
     case mu of
       Nothing -> return Nothing
       Just u -> do
-        case u !? "pwhash" >>= cast' >>= return . encodeUtf8 of
+        case PasswordHash <$> (u !? "pwhash" >>= cast') of
           Just h | h == p -> do
                      insert "session"
                        [ "id" =: String (unSessionId sid)
