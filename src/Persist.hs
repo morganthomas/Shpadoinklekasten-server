@@ -14,6 +14,7 @@ import           Database.MongoDB
 import qualified Data.Map as M
 import           Data.Maybe (catMaybes, fromMaybe)
 import           Data.Text hiding (foldl, null, find)
+import           Data.Text.Encoding (encodeUtf8)
 import           Data.Time.Calendar
 import           Data.Time.LocalTime
 import           Data.UUID as U
@@ -75,12 +76,15 @@ instance ZettelEditor (Action IO) where
     c   <- liftIO $ localDay . zonedTimeToLocalTime <$> getZonedTime
     case mu of
       Nothing -> return Nothing
-      Just _ -> do
-        insert "session"
-          [ "id" =: String (unSessionId sid)
-          , "user" =: String (unUserId uid)
-          , "created" =: dayToDoc c ]
-        return . Just $ Session sid uid c
+      Just u -> do
+        case u !? "pwhash" >>= cast' >>= return . encodeUtf8 of
+          Just h | h == p -> do
+                     insert "session"
+                       [ "id" =: String (unSessionId sid)
+                       , "user" =: String (unUserId uid)
+                       , "created" =: dayToDoc c ]
+                     return . Just $ Session sid uid c
+          _ -> return Nothing
 
 
 collect :: Ord id => (Text -> id) -> (Document -> Maybe a) -> M.Map id a -> Cursor -> Action IO (M.Map id a)
@@ -160,6 +164,7 @@ parseSession d = do
 
 validateSession :: SessionId -> Action IO Session
 validateSession sid = do
+  -- TODO: make sessions expire
   ms <- join . fmap parseSession <$> findOne (select ["id" =: String (unSessionId sid)] "session")
   case ms of
     Just s -> return s
