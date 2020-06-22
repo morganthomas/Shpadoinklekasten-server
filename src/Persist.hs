@@ -54,9 +54,13 @@ instance ZettelEditor (Action IO) where
 
 
   saveNewComment tid t sid = do
-    _ <- validateSession sid
+    s <- validateSession sid
+    c <- liftIO $ localDay . zonedTimeToLocalTime <$> getZonedTime
     modify (select [ "id" =: String (unThreadId tid) ] "thread")
-      [ "$push" =: Doc [ "comments" =: String t ] ]
+      [ "$push" =: Doc [ "comments" =: Doc
+                         [ "author" =: String (unUserId (sessionUser s))
+                         , "created" =: dayToDoc c
+                         , "text" =: String t ] ] ]
 
 
   getDatabase sid = do
