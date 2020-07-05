@@ -26,7 +26,7 @@ import           SHA256
 
 api :: Pipe -> Server API
 api conn = hoistServer (Proxy @API) (liftIO . access conn UnconfirmedWrites "s11kasten")
-           (saveNewCategory :<|> saveNewThread :<|> saveNewComment :<|> getDatabase :<|> login)
+           (saveChange :<|> getDatabase :<|> login)
 
 
 app :: Text -> Server SPA

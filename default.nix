@@ -20,9 +20,23 @@ let
   };
 
 
+  Shpadoinkle-continuations-src = builtins.fetchGit {
+    url    = https://github.com/morganthomas/Shpadoinkle-continuations.git;
+    rev    = "f5e88745c39d2e5ae379cdbd9d93630c37788224";
+    ref    = "master";
+  };
+
+
   Shpadoinklekasten-lib-src = builtins.fetchGit {
     url    = ssh://git@github.com/morganthomas/Shpadoinklekasten-lib.git;
-    rev    = "b9896a270062531a5e94ea21af3bb54ce12ccdc9";
+    rev    = "aaa72cd6092fc49bcdd7c84fdc9008d30c3d5cd1";
+    ref    = "algebra";
+  };
+
+
+  next-uuid-src = builtins.fetchGit {
+    url    = https://github.com/morganthomas/next-uuid.git;
+    rev    = "ddcea7d70a01bf667c2ec3d82cef46e4b6852499";
     ref    = "master";
   };
 
@@ -63,9 +77,11 @@ let
     jsaddle = hsuper.jsaddle;
     mongoDB = hsuper.mongoDB;
     network = hsuper.network;
+    next-uuid = hself.callCabal2nix "next-uuid" next-uuid-src {};
     raw-strings-qq = hsuper.raw-strings-qq;
-    Shpadoinkle-continuations = hsuper.Shpadoinkle-continuations;
-    Shpadoinklekasten-lib = hself.callCabal2nix "Shpadoinklekasten-lib" "${Shpadoinklekasten-lib-src}" {};    transformers = hsuper.transformers;
+    Shpadoinkle-continuations = hself.callCabal2nix "Shpadoinkle-continuations" Shpadoinkle-continuations-src {};
+    Shpadoinklekasten-lib = hself.callCabal2nix "Shpadoinklekasten-lib" Shpadoinklekasten-lib-src {};
+    transformers = hsuper.transformers;
     unliftio = hsuper.unliftio;
   };
 

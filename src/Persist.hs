@@ -3,6 +3,7 @@
 {-# LANGUAGE ExtendedDefaultRules #-}
 {-# LANGUAGE FlexibleInstances    #-}
 {-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE ViewPatterns         #-}
 
 
 module Persist where
@@ -25,58 +26,56 @@ import           Types
 
 instance ZettelEditor (Action IO) where
 
-  saveNewCategory i t sid = do
+  saveChange (NewCategory i t) sid = do
     _ <- validateSession sid
     void $ insert "category"
-      [ "id" =: String (unCategoryId i)
+      [ "id" =: String (U.toText (unCategoryId i))
       , "title" =: String t
       , "threads" =: Array [] ]
 
 
-  saveNewThread i t ls cs sid = do
+  saveChange (NewThread ic it t) sid = do
     s <- validateSession sid
     c <- liftIO $ localDay . zonedTimeToLocalTime <$> getZonedTime
     insert "thread"
-      [ "id" =: String (unThreadId i)
+      [ "id" =: String (U.toText (unThreadId it))
       , "title" =: String t
       , "author" =: String (unUserId (sessionUser s))
       , "created" =: dayToDoc c
       , "comments" =: Array []
-      , "links" =: Array
-        ((\l -> Doc
-                [ "to" =: String (unThreadId (linkTo l))
-                , "description" =: String (linkDescription l) ])
-         <$> ls)
-      , "categorization" =: Array (String . unCategoryId <$> cs) ]
+      , "links" =: Array []
+      , "categorization" =: Array [String (U.toText (unCategoryId ic))] ]
 
-    modify (select [ "id" =: Doc [ "$in" =: (String . unCategoryId <$> cs) ] ] "category")
-      [ "$push" =: Doc [ "threads" =: String (unThreadId i) ] ]
+    modify (select [ "id" =: String (U.toText (unCategoryId ic)) ] "category")
+      [ "$push" =: Doc [ "threads" =: String (U.toText (unThreadId it)) ] ]
 
 
-  saveNewComment tid t sid = do
+  saveChange (NewComment it ic t) sid = do
     s <- validateSession sid
     c <- liftIO $ localDay . zonedTimeToLocalTime <$> getZonedTime
-    modify (select [ "id" =: String (unThreadId tid) ] "thread")
-      [ "$push" =: Doc [ "comments" =: Doc
-                         [ "author" =: String (unUserId (sessionUser s))
-                         , "created" =: dayToDoc c
-                         , "text" =: String t ] ] ]
+    modify (select [ "id" =: String (U.toText (unThreadId it)) ] "thread")
+      [ "$push" =: Doc [ "comments" =: String (U.toText (unCommentId ic)) ] ]
+    insert "comment"
+      [ "author" =: String (unUserId (sessionUser s))
+      , "created" =: dayToDoc c
+      , "text" =: String t ]
+    return ()
 
 
   getDatabase sid = do
     s       <- validateSession sid
     catCur  <- find (select [] "category")
-    cats    <- collect CategoryId parseCategory mempty catCur
+    cats    <- collect (fmap CategoryId . U.fromText) parseCategory mempty catCur
     thCur   <- find (select [] "thread")
-    threads <- collect ThreadId parseThread mempty thCur
+    threads <- collect (fmap ThreadId . U.fromText) parseThread mempty thCur
     usCur   <- find (select [] "user")
-    users   <- collect UserId parseUser mempty usCur
-    return (Zettel cats threads users (Just s))
+    users   <- collect (Just . UserId) parseUser mempty usCur
+    return (Zettel cats threads mempty mempty mempty mempty users (Just s)) -- TODO
 
 
   login uid p = do
     mu  <- findOne (select ["id" =: String (unUserId uid)] "user")
-    sid <- SessionId . U.toText <$> liftIO randomIO
+    sid <- SessionId <$> liftIO randomIO
     c   <- liftIO $ localDay . zonedTimeToLocalTime <$> getZonedTime
     case mu of
       Nothing -> return Nothing
@@ -84,18 +83,18 @@ instance ZettelEditor (Action IO) where
         case PasswordHash <$> (u !? "pwhash" >>= cast') of
           Just h | h == p -> do
                      insert "session"
-                       [ "id" =: String (unSessionId sid)
+                       [ "id" =: String (U.toText (unSessionId sid))
                        , "user" =: String (unUserId uid)
                        , "created" =: dayToDoc c ]
-                     return . Just $ Session sid uid c
+                     return . Just $ Session sid uid c []
           _ -> return Nothing
 
 
-collect :: Ord id => (Text -> id) -> (Document -> Maybe a) -> M.Map id a -> Cursor -> Action IO (M.Map id a)
+collect :: Ord id => (Text -> Maybe id) -> (Document -> Maybe a) -> M.Map id a -> Cursor -> Action IO (M.Map id a)
 collect toId parse m cur = do
   docs <- nextBatch cur
   let addDoc m d = fromMaybe m $ do
-        i <- toId <$> (d !? "id" >>= cast')
+        i <- d !? "id" >>= cast' >>= toId
         x <- parse d
         return (M.insert i x m)
   let m' = foldl addDoc m docs
@@ -105,9 +104,11 @@ collect toId parse m cur = do
 parseCategory :: Document -> Maybe Category
 parseCategory d = do
   t  <- d !? "title" >>= cast'
-  i  <- CategoryId <$> (d !? "id" >>= cast')
-  ts <- d !? "threads" >>= cast'
-  return (Category t i (ThreadId <$> ts))
+  i  <- CategoryId <$> (d !? "id" >>= cast' >>= U.fromText)
+  ts <- fmap ThreadId <$> (d !? "threads" >>= cast' >>= sequence . fmap U.fromText)
+  let f = CategoryId <$> (d !? "from" >>= cast' >>= U.fromText)
+  tr <- d !? "isTrash" >>= cast'
+  return (Category t i ts f tr)
 
 
 parseUser :: Document -> Maybe UserProfile
@@ -119,31 +120,32 @@ parseUser d = do
   return (UserProfile i n e c)
 
 
-parseLink :: Document -> Maybe Link
-parseLink d = do
-  t <- ThreadId <$> (d !? "to" >>= cast')
-  e <- d !? "description" >>= cast'
-  return (Link t e)
-
-
 parseComment :: Document -> Maybe Comment
 parseComment d = do
+  i <- CommentId <$> (d !? "id" >>= cast' >>= U.fromText)
   a <- UserId <$> (d !? "author" >>= cast')
   c <- d !? "created" >>= cast' >>= parseDay
+  e <- d !? "edits" >>= cast' >>= sequence . fmap (parseEdit)
+  return (Comment i a c e)
+
+
+parseEdit :: Document -> Maybe Edit
+parseEdit d = do
+  c <- d !? "created" >>= cast' >>= parseDay
   t <- d !? "text" >>= cast'
-  return (Comment a c t)
+  return (Edit c t)
 
 
 parseThread :: Document -> Maybe Thread
 parseThread d = do
-  i  <- ThreadId <$> (d !? "id" >>= cast')
+  i  <- ThreadId <$> (d !? "id" >>= cast' >>= U.fromText)
   t  <- d !? "title" >>= cast'
   a  <- UserId <$> (d !? "author" >>= cast')
   c  <- d !? "created" >>= cast' >>= parseDay
-  ls <- d !? "links" >>= cast'
-  ts <- d !? "comments" >>= cast'
-  cs <- d !? "categorization" >>= cast'
-  return (Thread i t a c (catMaybes $ parseComment <$> ts) (catMaybes $ parseLink <$> ls) (CategoryId <$> cs))
+  ts <- fmap CommentId <$> (d !? "comments" >>= cast' >>= sequence . fmap U.fromText)
+  cs <- fmap CategoryId <$> (d !? "categorization" >>= cast' >>= sequence . fmap U.fromText)
+  let f = ThreadId <$> (d !? "createdFrom" >>= cast' >>= U.fromText)
+  return (Thread i t a c ts cs f)
 
 
 parseDay :: Document -> Maybe Day
@@ -160,16 +162,16 @@ dayToDoc day = let (y, m, d) = toGregorian day in [ "year" =: y, "month" =: m, "
 
 parseSession :: Document -> Maybe Session
 parseSession d = do
-  sid <- SessionId <$> (d !? "id" >>= cast')
+  sid <- SessionId <$> (d !? "id" >>= cast' >>= U.fromText)
   uid <- UserId <$> (d !? "user" >>= cast')
   c   <- d !? "created" >>= cast' >>= parseDay
-  return (Session sid uid c)
+  return (Session sid uid c []) -- TODO changes
 
 
 validateSession :: SessionId -> Action IO Session
 validateSession sid = do
   -- TODO: make sessions expire
-  ms <- join . fmap parseSession <$> findOne (select ["id" =: String (unSessionId sid)] "session")
+  ms <- join . fmap parseSession <$> findOne (select ["id" =: String (U.toText (unSessionId sid))] "session")
   case ms of
     Just s -> return s
     Nothing -> fail "invalid session"
