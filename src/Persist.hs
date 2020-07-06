@@ -86,7 +86,7 @@ instance ZettelEditor (Action IO) where
                        [ "id" =: String (U.toText (unSessionId sid))
                        , "user" =: String (unUserId uid)
                        , "created" =: dayToDoc c ]
-                     return . Just $ Session sid uid c []
+                     return . Just $ Session sid uid c
           _ -> return Nothing
 
 
@@ -165,7 +165,7 @@ parseSession d = do
   sid <- SessionId <$> (d !? "id" >>= cast' >>= U.fromText)
   uid <- UserId <$> (d !? "user" >>= cast')
   c   <- d !? "created" >>= cast' >>= parseDay
-  return (Session sid uid c []) -- TODO changes
+  return (Session sid uid c)
 
 
 validateSession :: SessionId -> Action IO Session
