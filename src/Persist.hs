@@ -9,11 +9,13 @@
 module Persist where
 
 
+import           Control.Applicative ((<|>))
 import           Control.Monad (join, void)
 import           Control.Monad.IO.Class
 import           Database.MongoDB
 import qualified Data.Map as M
 import           Data.Maybe (catMaybes, fromMaybe)
+import qualified Data.Set as S
 import           Data.Text hiding (foldl, null, find)
 import           Data.Text.Encoding (encodeUtf8)
 import           Data.Time.Calendar
@@ -63,14 +65,23 @@ instance ZettelEditor (Action IO) where
 
 
   getDatabase sid = do
-    s       <- validateSession sid
-    catCur  <- find (select [] "category")
-    cats    <- collect (fmap CategoryId . U.fromText) parseCategory mempty catCur
-    thCur   <- find (select [] "thread")
-    threads <- collect (fmap ThreadId . U.fromText) parseThread mempty thCur
-    usCur   <- find (select [] "user")
-    users   <- collect (Just . UserId) parseUser mempty usCur
-    return (Zettel cats threads mempty mempty mempty mempty users (Just s)) -- TODO
+    s         <- validateSession sid
+    catCur    <- find (select [] "category")
+    cats      <- collectMap (fmap CategoryId . U.fromText) parseCategory mempty catCur
+    catOrd    <- fromMaybe [] <$> findOne (select [] "categoryOrdering")
+    thCur     <- find (select [] "thread")
+    threads   <- collectMap (fmap ThreadId . U.fromText) parseThread mempty thCur
+    trashCur  <- find (select [] "trashcan")
+    trash     <- collectSet (fmap ThreadId . cast') mempty trashCur
+    comCur    <- find (select [] "comment")
+    comments  <- collectMap (fmap CommentId . U.fromText) parseComment mempty comCur
+    lblCur    <- find (select [] "relationLabel")
+    labels    <- collectSet parseRelationLabel mempty lblCur
+    relCur    <- find (select [] "relation")
+    relations <- collectSet parseRelation mempty relCur
+    usCur     <- find (select [] "user")
+    users     <- collectMap (Just . UserId) parseUser mempty usCur
+    return (Zettel cats threads trash comments labels relations users (Just s))
 
 
   login uid p = do
@@ -90,15 +101,32 @@ instance ZettelEditor (Action IO) where
           _ -> return Nothing
 
 
-collect :: Ord id => (Text -> Maybe id) -> (Document -> Maybe a) -> M.Map id a -> Cursor -> Action IO (M.Map id a)
-collect toId parse m cur = do
+collectMap :: Ord id => (Text -> Maybe id) -> (Document -> Maybe a) -> M.Map id a -> Cursor -> Action IO (M.Map id a)
+collectMap toId parse m cur = do
   docs <- nextBatch cur
   let addDoc m d = fromMaybe m $ do
         i <- d !? "id" >>= cast' >>= toId
         x <- parse d
         return (M.insert i x m)
   let m' = foldl addDoc m docs
-  if Prelude.null docs then return m' else collect toId parse m' cur
+  if Prelude.null docs then return m' else collectMap toId parse m' cur
+
+
+collectSet :: Ord a => (Document -> Maybe a) -> S.Set a -> Cursor -> Action IO (S.Set a)
+collectSet parse s cur = do
+  docs <- nextBatch cur
+  let addDoc s d = fromMaybe s $ parse d >>= flip S.insert s
+  let s' = foldl addDoc s docs
+  if Prelude.null docs then return s' else collectSet parse s' cur
+
+
+parseRelationLabel :: Document -> Maybe RelationLabel
+parseRelationLabel d = parseSymmetric <|> parseAsymmetric
+  where parseSymmetric = SymmL . SymmL' <$> d !? "symmetric"
+        parseAsymmetric = do
+          l <- d !? "left"
+          r <- d !? "right"
+          return . AsymL $ AsymL' l r
 
 
 parseCategory :: Document -> Maybe Category
