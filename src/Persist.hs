@@ -26,6 +26,10 @@ import           System.Random (randomIO)
 import           Types
 
 
+now :: Action IO Day
+now = liftIO $ localDay . zonedTimeToLocalTime <$> getZonedTime
+
+
 instance ZettelEditor (Action IO) where
 
   saveChange (NewCategory i t) sid = do
@@ -38,7 +42,7 @@ instance ZettelEditor (Action IO) where
 
   saveChange (NewThread ic it t) sid = do
     s <- validateSession sid
-    c <- liftIO $ localDay . zonedTimeToLocalTime <$> getZonedTime
+    c <- now
     insert "thread"
       [ "id" =: String (U.toText (unThreadId it))
       , "title" =: String t
@@ -54,14 +58,33 @@ instance ZettelEditor (Action IO) where
 
   saveChange (NewComment it ic t) sid = do
     s <- validateSession sid
-    c <- liftIO $ localDay . zonedTimeToLocalTime <$> getZonedTime
+    c <- now
     modify (select [ "id" =: String (U.toText (unThreadId it)) ] "thread")
       [ "$push" =: Doc [ "comments" =: String (U.toText (unCommentId ic)) ] ]
     insert "comment"
       [ "author" =: String (unUserId (sessionUser s))
       , "created" =: dayToDoc c
-      , "text" =: String t ]
+      , "edits" =: Array [ Doc [ "created" := Doc (dayToDoc c), "text" := String t ] ] ]
     return ()
+
+
+  saveChange (AddThreadToCategory cid tid) sid = do
+    s <- validateSession sid
+    modify (select [ "id" =: String (U.toText (unCategoryId cid)) ] "category")
+      [ "$push" =: Doc [ "threads" =: String (U.toText (unThreadId tid)) ] ]
+    modify (select [ "id" =: String (U.toText (unThreadId tid)) ] "thread")
+      [ "$push" =: Doc [ "categorization" =: String (U.toText (unCategoryId cid)) ] ]
+
+
+  saveChange (RemoveThreadFromCategory cid tid) sid = do
+    s <- validateSession sid
+    modify (select [ "id" =: String (U.toText (unCategoryId cid)) ] "category")
+      [ "$pull" =: Doc [ "threads" =: String (U.toText (unThreadId tid)) ] ]
+    modify (select [ "id" =: String (U.toText (unThreadId tid)) ] "thread")
+      [ "$pull" =: Doc [ "categorization" =: String (U.toText (unCategoryId cid)) ] ]
+
+
+  -- TODO remaining saveChange cases
 
 
   getDatabase sid = do
