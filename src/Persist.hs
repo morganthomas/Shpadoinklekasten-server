@@ -68,11 +68,14 @@ instance ZettelEditor (Action IO) where
     s         <- validateSession sid
     catCur    <- find (select [] "category")
     cats      <- collectMap (fmap CategoryId . U.fromText) parseCategory mempty catCur
-    catOrd    <- fromMaybe [] <$> findOne (select [] "categoryOrdering")
+    catOrd    <- fromMaybe [] . fmap (fmap (CategoryId)) . join . fmap sequence . fmap (fmap (U.fromText))
+                   . join . fmap cast' . join . fmap (!? "categoryOrdering")
+                 <$> findOne (select [] "categoryOrdering")
     thCur     <- find (select [] "thread")
     threads   <- collectMap (fmap ThreadId . U.fromText) parseThread mempty thCur
     trashCur  <- find (select [] "trashcan")
-    trash     <- collectSet (fmap ThreadId . cast') mempty trashCur
+    trash     <- collectSet (fmap ThreadId . join . fmap U.fromText . join . fmap cast' . (!? "threadId"))
+                 mempty trashCur
     comCur    <- find (select [] "comment")
     comments  <- collectMap (fmap CommentId . U.fromText) parseComment mempty comCur
     lblCur    <- find (select [] "relationLabel")
@@ -81,7 +84,7 @@ instance ZettelEditor (Action IO) where
     relations <- collectSet parseRelation mempty relCur
     usCur     <- find (select [] "user")
     users     <- collectMap (Just . UserId) parseUser mempty usCur
-    return (Zettel cats threads trash comments labels relations users (Just s))
+    return (Zettel cats catOrd threads trash comments labels relations users (Just s))
 
 
   login uid p = do
@@ -115,7 +118,7 @@ collectMap toId parse m cur = do
 collectSet :: Ord a => (Document -> Maybe a) -> S.Set a -> Cursor -> Action IO (S.Set a)
 collectSet parse s cur = do
   docs <- nextBatch cur
-  let addDoc s d = fromMaybe s $ parse d >>= flip S.insert s
+  let addDoc s d = fromMaybe s $ flip S.insert s <$> parse d
   let s' = foldl addDoc s docs
   if Prelude.null docs then return s' else collectSet parse s' cur
 
@@ -127,6 +130,24 @@ parseRelationLabel d = parseSymmetric <|> parseAsymmetric
           l <- d !? "left"
           r <- d !? "right"
           return . AsymL $ AsymL' l r
+
+
+parseRelation :: Document -> Maybe Relation
+parseRelation d = parseSymmetric <|> parseAsymmetric
+  where parseSymmetric = Symm <$>
+          do l <- d !? "label" >>= cast'
+             m <- l !? "symmetric"
+             f <- d !? "from" >>= cast' >>= U.fromText
+             t <- d !? "to" >>= cast' >>= U.fromText
+             return (Rel (SymmL' m) (ThreadId f, ThreadId t))
+
+        parseAsymmetric = Asym <$>
+          do l <- d !? "label" >>= cast'
+             m <- l !? "left"
+             n <- l !? "right"
+             f <- d !? "from" >>= cast' >>= U.fromText
+             t <- d !? "to" >>= cast' >>= U.fromText
+             return (Rel (AsymL' m n) (ThreadId f, ThreadId t))
 
 
 parseCategory :: Document -> Maybe Category

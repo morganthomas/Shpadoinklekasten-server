@@ -22,14 +22,14 @@ let
 
   Shpadoinkle-continuations-src = builtins.fetchGit {
     url    = https://github.com/morganthomas/Shpadoinkle-continuations.git;
-    rev    = "91bffa19cf27424019ea90eb8f873a7e4ee0d401";
+    rev    = "38055fc348b31be6c4b466513463d9d57d613e60";
     ref    = "master";
   };
 
 
   Shpadoinklekasten-lib-src = builtins.fetchGit {
     url    = ssh://git@github.com/morganthomas/Shpadoinklekasten-lib.git;
-    rev    = "db3e154f4040865599e7fb67c97cb05a252cfff1";
+    rev    = "ede680921ef4ba8fc42eb14db092ce293c820a5d";
     ref    = "algebra";
   };
 
