@@ -15,10 +15,11 @@ import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Class
 import           Control.Monad.Trans.Maybe
 import           Database.MongoDB
+import           Data.List (uncons)
 import qualified Data.Map as M
 import           Data.Maybe (catMaybes, fromMaybe)
 import qualified Data.Set as S
-import           Data.Text hiding (foldl, null, find)
+import           Data.Text hiding (foldl, null, find, uncons, takeWhile, dropWhile)
 import           Data.Text.Encoding (encodeUtf8)
 import           Data.Time.Calendar
 import           Data.Time.LocalTime
@@ -47,35 +48,104 @@ instance ZettelEditor (Action IO) where
     s <- validateSession sid
     n <- now
     _ <- insert "thread" . doc . val $ Thread it t (sessionUser s) n [] [ic] Nothing
-    modify (select [ "id" =: val ic ] "category") [ "$push" =: Doc [ "threads" =: val it ] ]
+    modify (select [ "id" =: ic ] "category") [ "$push" =: Doc [ "threads" =: it ] ]
 
 
   saveChange (NewComment it ic t) sid = do
     s <- validateSession sid
     n <- now
-    modify (select [ "id" =: val it ] "thread") [ "$push" =: Doc [ "comments" =: val ic ] ]
+    modify (select [ "id" =: it ] "thread") [ "$push" =: Doc [ "comments" =: ic ] ]
     void . insert "comment" . doc . val $ Comment ic (sessionUser s) n [Edit n t]
 
 
   saveChange (AddThreadToCategory cid tid) sid = do
     s <- validateSession sid
-    modify (select [ "id" =: val cid ] "category") [ "$push" =: Doc [ "threads" =: val tid ] ]
-    modify (select [ "id" =: val tid ] "thread") [ "$push" =: Doc [ "categorization" =: val cid ] ]
+    modify (select [ "id" =: cid ] "category") [ "$push" =: Doc [ "threads" =: tid ] ]
+    modify (select [ "id" =: tid ] "thread") [ "$push" =: Doc [ "categorization" =: cid ] ]
 
 
   saveChange (RemoveThreadFromCategory cid tid) sid = do
     s <- validateSession sid
-    modify (select [ "id" =: val cid ] "category") [ "$pull" =: Doc [ "threads" =: val tid ] ]
-    modify (select [ "id" =: val tid ] "thread") [ "$pull" =: Doc [ "categorization" =: val cid ] ]
+    modify (select [ "id" =: cid ] "category") [ "$pull" =: Doc [ "threads" =: tid ] ]
+    modify (select [ "id" =: tid ] "thread") [ "$pull" =: Doc [ "categorization" =: cid ] ]
 
 
-  saveChange (RetitleCategory cid0 cid1 t) sid = do
+  saveChange (RetitleCategory cid0 cid1 txt) sid = do
     s <- validateSession sid
-    m <- findOne (select [ "id" =: val cid0 ] "category")
     void . runMaybeT $ do
-      d <- MaybeT $ findOne (select [ "id" =: val cid0 ] "category")
+      d <- MaybeT . findOne $ select [ "id" =: cid0 ] "category"
       c <- MaybeT . return $ cast' (Doc d)
-      lift . insert "category" . doc . val $ c { categoryId = cid1 }
+      lift . insert "category" . doc . val $ c { categoryId = cid1, categoryTitle = txt }
+      lift $ modify (select [ "id" =: cid0 ] "category") [ "isTrash" =: True ]
+
+
+  saveChange (RetitleThread tid0 tid1 txt) sid = do
+    s <- validateSession sid
+    void . runMaybeT $ do
+      d <- MaybeT . findOne $ select [ "id" =: tid0 ] "thread"
+      t <- MaybeT . return $ cast' (Doc d)
+      lift . insert "thread" . doc. val $ t { threadId = tid1, threadTitle = txt }
+      lift $ modify (select [ "id" =: Doc [ "$in" =: val <$> categorization t ] ] "category")
+        [ "$pull" =: tid0, "$push" =: tid1 ]
+      lift $ modify (select [] "trashcan") [ "$push" =: Doc [ "threadIds" =: tid0 ] ]
+
+
+  saveChange (RemoveComment tid0 tid1 cid) sid = do
+    s <- validateSession sid
+    void . runMaybeT $ do
+      d <- MaybeT . findOne $ select [ "id" =: tid0 ] "thread"
+      t <- MaybeT . return $ cast' (Doc d)
+      let t' = t { threadId = tid0
+                 , threadCommentIds = Prelude.filter (/= cid) (threadCommentIds t) }
+      lift . insert "thread" . doc . val $ t'
+      lift $ modify (select [ "id" =: Doc [ "$in" =: categorization t ] ] "category")
+        [ "$pull" =: Doc [ "threadIds" =: tid0 ], "$push" =: Doc [ "threadIds" =: tid1 ] ]
+      lift $ modify (select [] "trashcan") [ "$push" =: Doc [ "threadIds" =: tid0 ] ]
+
+
+  saveChange (TrashCategory cid) sid = do
+    s <- validateSession sid
+    modify (select [ "id" =: cid ] "category") [ "isTrash" =: True ]
+
+
+  saveChange (UntrashCategory cid) sid = do
+    s <- validateSession sid
+    modify (select [ "id" =: cid ] "category") [ "isTrash" =: False ]
+
+
+  saveChange (SplitThread tid0 tid1 tid2 cid) sid = do
+    s <- validateSession sid
+    n <- now
+    void . runMaybeT $ do
+      dt <- MaybeT . findOne $ select [ "id" =: tid0 ] "thread"
+      t0 <- MaybeT . return $ cast' (Doc dt)
+      dc <- MaybeT . findOne $ select [ "id" =: cid ] "comment"
+      c  <- MaybeT . return $ cast' (Doc dc)
+      let cs0 = threadCommentIds t0
+      let cs1 = takeWhile (/= cid) cs0
+      cs2 <- MaybeT . return . fmap snd . uncons $ dropWhile (/= cid) cs0
+      let t1 = Thread tid1 (threadTitle t0) (sessionUser s) n cs1 (categorization t0) (Just tid0)
+      let t2 = Thread tid2 (commentText c) (sessionUser s) n cs2 (categorization t0) (Just tid0)
+      lift . insert "thread" . doc . val $ t1
+      lift . insert "thread" . doc . val $ t2
+      lift $ modify (select [ "id" =: Doc [ "$in" =: val <$> categorization t0 ] ] "category")
+        [ "$pull" =: Doc [ "threadIds" =: tid0 ]
+        , "$push" =: Doc [ "threadIds" =: Array [ val tid1, val tid2 ] ] ]
+      lift $ modify (select [] "trashcan") [ "$push" =: Doc [ "threadIds" =: tid0 ] ]
+
+
+  saveChange (AddCommentToThread tid cid) sid = do
+    s <- validateSession sid
+    modify (select [ "id" =:tid ] "thread") [ "$push" =: Doc [ "commentIds" =: cid ] ]
+
+
+  saveChange (AddCommentRangeToThread tid0 cid0 cidN tid1) sid = do
+    s <- validateSession sid
+    void . runMaybeT $ do
+      d  <- MaybeT . findOne $ select [ "id" =: tid0 ] "thread"
+      t0 <- MaybeT . return $ cast' (Doc d)
+      let cs = (++ [cidN]) . takeWhile (/= cidN) . dropWhile (/= cid0) $ threadCommentIds t0
+      lift $ modify (select [ "id" =: tid1 ] "thread") [ "$push" =: Doc [ "commentIds" =: cs ] ]
 
 
   -- TODO remaining saveChange cases
