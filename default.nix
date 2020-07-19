@@ -15,21 +15,14 @@ let
   # It's a shpadoinkle day
   shpadoinkle = builtins.fetchGit {
     url    = https://gitlab.com/fresheyeball/Shpadoinkle.git;
-    rev    = "77a56850ab7897f28b107a729cff893e74dd15bd";
-    ref    = "master";
-  };
-
-
-  Shpadoinkle-continuations-src = builtins.fetchGit {
-    url    = https://github.com/morganthomas/Shpadoinkle-continuations.git;
-    rev    = "38055fc348b31be6c4b466513463d9d57d613e60";
+    rev    = "d9bc6099ed5ef196b073267c2c737e9ed5d49b98";
     ref    = "master";
   };
 
 
   Shpadoinklekasten-lib-src = builtins.fetchGit {
     url    = ssh://git@github.com/morganthomas/Shpadoinklekasten-lib.git;
-    rev    = "6964e0d860a8ffd3ed87db0a7b28583d494346a7";
+    rev    = "363b5544d63c292c2b2cdfa336ba647c19743bf0";
     ref    = "algebra";
   };
 
@@ -79,7 +72,6 @@ let
     network = hsuper.network;
     next-uuid = hself.callCabal2nix "next-uuid" next-uuid-src {};
     raw-strings-qq = hsuper.raw-strings-qq;
-    Shpadoinkle-continuations = hself.callCabal2nix "Shpadoinkle-continuations" Shpadoinkle-continuations-src {};
     Shpadoinklekasten-lib = hself.callCabal2nix "Shpadoinklekasten-lib" Shpadoinklekasten-lib-src {};
     transformers = hsuper.transformers;
     unliftio = hsuper.unliftio;
