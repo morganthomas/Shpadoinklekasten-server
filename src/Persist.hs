@@ -11,7 +11,7 @@ module Persist where
 
 
 import           Control.Applicative ((<|>))
-import           Control.Monad (join, void)
+import           Control.Monad (join, void, forM_)
 import           Control.Monad.IO.Class
 import           Control.Monad.Trans.Class
 import           Control.Monad.Trans.Maybe
@@ -173,7 +173,45 @@ instance ZettelEditor (Action IO) where
       lift $ modify (select [] "categoryOrdering") [ "categoryIds" =: o' ]
 
 
-  -- TODO remaining saveChange cases
+  saveChange (MoveComment tid cid i) sid = do
+    s <- validateSession sid
+    void . runMaybeT $ do
+      d <- MaybeT . findOne $ select [ "id" =: tid ] "thread"
+      t <- MaybeT . return $ cast' (Doc d)
+      let cs = insertAt i cid $ filter (/= cid) (threadCommentIds t)
+      lift $ modify (select [ "id" =: tid ] "thread") [ "commentIds" =: cs ]
+
+
+  saveChange (MoveThread cid tid i) sid = do
+    s <- validateSession sid
+    void . runMaybeT $ do
+      d <- MaybeT . findOne $ select [ "id" =: cid ] "category"
+      c <- MaybeT . return $ cast' (Doc d)
+      let ts = insertAt i tid $ filter (/= tid) (categoryThreadIds c)
+      lift $ modify (select [ "id" =: cid ] "category") [ "threadIds" =: ts ]
+
+
+  saveChange (NewRelationLabel l) sid = do
+    s <- validateSession sid
+    void . insert "relationLabel" . doc $ val l
+
+
+  saveChange (DeleteRelationLabel l) sid = do
+    s <- validateSession sid
+    delete $ select (doc (val l)) "relationLabel"
+
+
+  saveChange (NewRelation r) sid = do
+    s <- validateSession sid
+    void . insert "relation" . doc $ val r
+
+
+  saveChange (DeleteRelation r) sid = do
+    s <- validateSession sid
+    delete $ select (doc (val r)) "relation"
+
+
+  saveChange (ComposedChanges cs) sid = forM_ cs (\c -> saveChange c sid)
 
 
   getDatabase sid = do
