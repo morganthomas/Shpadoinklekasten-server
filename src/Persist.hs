@@ -2,6 +2,7 @@
 {-# LANGUAGE OverloadedStrings    #-}
 {-# LANGUAGE ExtendedDefaultRules #-}
 {-# LANGUAGE FlexibleInstances    #-}
+{-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE ViewPatterns         #-}
 
@@ -19,7 +20,7 @@ import           Data.List (uncons)
 import qualified Data.Map as M
 import           Data.Maybe (catMaybes, fromMaybe)
 import qualified Data.Set as S
-import           Data.Text hiding (foldl, null, find, uncons, takeWhile, dropWhile)
+import           Data.Text hiding (foldl, null, find, uncons, takeWhile, dropWhile, filter)
 import           Data.Text.Encoding (encodeUtf8)
 import           Data.Time.Calendar
 import           Data.Time.LocalTime
@@ -41,7 +42,8 @@ instance ZettelEditor (Action IO) where
 
   saveChange (NewCategory i t) sid = do
     _ <- validateSession sid
-    void . insert "category" . doc . val $ Category t i [] Nothing False
+    _ <- insert "category" . doc . val $ Category t i [] Nothing False
+    modify (select [] "categoryOrdering") [ "$push" =: Doc [ "categoryIds" =: i ] ]
 
 
   saveChange (NewThread ic it t) sid = do
@@ -73,10 +75,14 @@ instance ZettelEditor (Action IO) where
   saveChange (RetitleCategory cid0 cid1 txt) sid = do
     s <- validateSession sid
     void . runMaybeT $ do
-      d <- MaybeT . findOne $ select [ "id" =: cid0 ] "category"
-      c <- MaybeT . return $ cast' (Doc d)
+      cd <- MaybeT . findOne $ select [ "id" =: cid0 ] "category"
+      c  <- MaybeT . return $ cast' (Doc cd)
       lift . insert "category" . doc . val $ c { categoryId = cid1, categoryTitle = txt }
       lift $ modify (select [ "id" =: cid0 ] "category") [ "isTrash" =: True ]
+      od <- MaybeT . findOne $ select [] "categoryOrdering"
+      o  <- MaybeT . return $ od !? "categoryIds" >>= cast'
+      let o' :: [CategoryId] = (\cid -> if cid == cid0 then cid1 else cid) <$> o
+      lift $ modify (select [] "categoryOrdering") [ "categoryIds" =: o' ]
 
 
   saveChange (RetitleThread tid0 tid1 txt) sid = do
@@ -106,11 +112,21 @@ instance ZettelEditor (Action IO) where
   saveChange (TrashCategory cid) sid = do
     s <- validateSession sid
     modify (select [ "id" =: cid ] "category") [ "isTrash" =: True ]
+    void . runMaybeT $ do
+      d <- MaybeT . findOne $ select [] "categoryOrdering"
+      o <- MaybeT . return $ d !? "categoryIds" >>= cast'
+      let o' = filter (/= cid) o
+      lift $ modify (select [] "categoryOrdering") [ "categoryIds" =: o' ]
 
 
   saveChange (UntrashCategory cid) sid = do
     s <- validateSession sid
     modify (select [ "id" =: cid ] "category") [ "isTrash" =: False ]
+    void . runMaybeT $ do
+      d <- MaybeT . findOne $ select [] "categoryOrdering"
+      o <- MaybeT . return $ d !? "categoryIds" >>= cast'
+      let o' = o ++ [cid]
+      lift $ modify (select [] "categoryOrdering") [ "categoryIds" =: o' ]
 
 
   saveChange (SplitThread tid0 tid1 tid2 cid) sid = do
@@ -148,6 +164,15 @@ instance ZettelEditor (Action IO) where
       lift $ modify (select [ "id" =: tid1 ] "thread") [ "$push" =: Doc [ "commentIds" =: cs ] ]
 
 
+  saveChange (MoveCategory cid i) sid = do
+    s <- validateSession sid
+    void . runMaybeT $ do
+      d <- MaybeT . findOne $ select [] "categoryOrdering"
+      o <- MaybeT . return $ d !? "categoryIds" >>= cast'
+      let o' :: [CategoryId] = insertAt i cid $ filter (/= cid) o
+      lift $ modify (select [] "categoryOrdering") [ "categoryIds" =: o' ]
+
+
   -- TODO remaining saveChange cases
 
 
@@ -156,7 +181,7 @@ instance ZettelEditor (Action IO) where
     catCur    <- find (select [] "category")
     cats      <- collectMap (fmap CategoryId . U.fromText) parseCategory mempty catCur
     catOrd    <- fromMaybe [] . fmap (fmap (CategoryId)) . join . fmap sequence . fmap (fmap (U.fromText))
-                   . join . fmap cast' . join . fmap (!? "categoryOrdering")
+                   . join . fmap cast' . join . fmap (!? "categoryIds")
                  <$> findOne (select [] "categoryOrdering")
     thCur     <- find (select [] "thread")
     threads   <- collectMap (fmap ThreadId . U.fromText) parseThread mempty thCur
