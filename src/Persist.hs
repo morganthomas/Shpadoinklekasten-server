@@ -37,17 +37,18 @@ instance ZettelEditor (Action IO) where
     void $ insert "category"
       [ "id" =: String (U.toText (unCategoryId i))
       , "title" =: String t
-      , "threads" =: Array [] ]
+      , "threads" =: Array []
+      , "isTrash" =: Bool False ]
 
 
   saveChange (NewThread ic it t) sid = do
     s <- validateSession sid
-    c <- now
+    n <- now
     insert "thread"
       [ "id" =: String (U.toText (unThreadId it))
       , "title" =: String t
       , "author" =: String (unUserId (sessionUser s))
-      , "created" =: dayToDoc c
+      , "created" =: dayToDoc n
       , "comments" =: Array []
       , "links" =: Array []
       , "categorization" =: Array [String (U.toText (unCategoryId ic))] ]
@@ -58,13 +59,13 @@ instance ZettelEditor (Action IO) where
 
   saveChange (NewComment it ic t) sid = do
     s <- validateSession sid
-    c <- now
+    n <- now
     modify (select [ "id" =: String (U.toText (unThreadId it)) ] "thread")
       [ "$push" =: Doc [ "comments" =: String (U.toText (unCommentId ic)) ] ]
     insert "comment"
       [ "author" =: String (unUserId (sessionUser s))
-      , "created" =: dayToDoc c
-      , "edits" =: Array [ Doc [ "created" := Doc (dayToDoc c), "text" := String t ] ] ]
+      , "created" =: dayToDoc n
+      , "edits" =: Array [ Doc [ "created" := Doc (dayToDoc n), "text" := String t ] ] ]
     return ()
 
 
@@ -82,6 +83,17 @@ instance ZettelEditor (Action IO) where
       [ "$pull" =: Doc [ "threads" =: String (U.toText (unThreadId tid)) ] ]
     modify (select [ "id" =: String (U.toText (unThreadId tid)) ] "thread")
       [ "$pull" =: Doc [ "categorization" =: String (U.toText (unCategoryId cid)) ] ]
+
+
+  saveChange (RetitleCategory cid0 cid1 t) sid = do
+    s <- validateSession sid
+    m <- findOne (select [ "id" =: String (U.toText (unCategoryId cid0)) ] "category")
+    case m of
+      Just c -> do
+        modify (select [ "id" =: String (U.toText (unCategoryId cid0)) ] "category")
+          [ "isTrash" =: Bool True ]
+        insert "category" (exclude ["id"] c ++ ["id" =: String (U.toText (unCategoryId cid1))])
+        return ()
 
 
   -- TODO remaining saveChange cases
