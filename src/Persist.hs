@@ -12,6 +12,8 @@ module Persist where
 import           Control.Applicative ((<|>))
 import           Control.Monad (join, void)
 import           Control.Monad.IO.Class
+import           Control.Monad.Trans.Class
+import           Control.Monad.Trans.Maybe
 import           Database.MongoDB
 import qualified Data.Map as M
 import           Data.Maybe (catMaybes, fromMaybe)
@@ -30,70 +32,50 @@ now :: Action IO Day
 now = liftIO $ localDay . zonedTimeToLocalTime <$> getZonedTime
 
 
+doc :: Value -> Document
+doc (Doc d) = d
+
+
 instance ZettelEditor (Action IO) where
 
   saveChange (NewCategory i t) sid = do
     _ <- validateSession sid
-    void $ insert "category"
-      [ "id" =: String (U.toText (unCategoryId i))
-      , "title" =: String t
-      , "threads" =: Array []
-      , "isTrash" =: Bool False ]
+    void . insert "category" . doc . val $ Category t i [] Nothing False
 
 
   saveChange (NewThread ic it t) sid = do
     s <- validateSession sid
     n <- now
-    insert "thread"
-      [ "id" =: String (U.toText (unThreadId it))
-      , "title" =: String t
-      , "author" =: String (unUserId (sessionUser s))
-      , "created" =: dayToDoc n
-      , "comments" =: Array []
-      , "links" =: Array []
-      , "categorization" =: Array [String (U.toText (unCategoryId ic))] ]
-
-    modify (select [ "id" =: String (U.toText (unCategoryId ic)) ] "category")
-      [ "$push" =: Doc [ "threads" =: String (U.toText (unThreadId it)) ] ]
+    _ <- insert "thread" . doc . val $ Thread it t (sessionUser s) n [] [ic] Nothing
+    modify (select [ "id" =: val ic ] "category") [ "$push" =: Doc [ "threads" =: val it ] ]
 
 
   saveChange (NewComment it ic t) sid = do
     s <- validateSession sid
     n <- now
-    modify (select [ "id" =: String (U.toText (unThreadId it)) ] "thread")
-      [ "$push" =: Doc [ "comments" =: String (U.toText (unCommentId ic)) ] ]
-    insert "comment"
-      [ "author" =: String (unUserId (sessionUser s))
-      , "created" =: dayToDoc n
-      , "edits" =: Array [ Doc [ "created" := Doc (dayToDoc n), "text" := String t ] ] ]
-    return ()
+    modify (select [ "id" =: val it ] "thread") [ "$push" =: Doc [ "comments" =: val ic ] ]
+    void . insert "comment" . doc . val $ Comment ic (sessionUser s) n [Edit n t]
 
 
   saveChange (AddThreadToCategory cid tid) sid = do
     s <- validateSession sid
-    modify (select [ "id" =: String (U.toText (unCategoryId cid)) ] "category")
-      [ "$push" =: Doc [ "threads" =: String (U.toText (unThreadId tid)) ] ]
-    modify (select [ "id" =: String (U.toText (unThreadId tid)) ] "thread")
-      [ "$push" =: Doc [ "categorization" =: String (U.toText (unCategoryId cid)) ] ]
+    modify (select [ "id" =: val cid ] "category") [ "$push" =: Doc [ "threads" =: val tid ] ]
+    modify (select [ "id" =: val tid ] "thread") [ "$push" =: Doc [ "categorization" =: val cid ] ]
 
 
   saveChange (RemoveThreadFromCategory cid tid) sid = do
     s <- validateSession sid
-    modify (select [ "id" =: String (U.toText (unCategoryId cid)) ] "category")
-      [ "$pull" =: Doc [ "threads" =: String (U.toText (unThreadId tid)) ] ]
-    modify (select [ "id" =: String (U.toText (unThreadId tid)) ] "thread")
-      [ "$pull" =: Doc [ "categorization" =: String (U.toText (unCategoryId cid)) ] ]
+    modify (select [ "id" =: val cid ] "category") [ "$pull" =: Doc [ "threads" =: val tid ] ]
+    modify (select [ "id" =: val tid ] "thread") [ "$pull" =: Doc [ "categorization" =: val cid ] ]
 
 
   saveChange (RetitleCategory cid0 cid1 t) sid = do
     s <- validateSession sid
-    m <- findOne (select [ "id" =: String (U.toText (unCategoryId cid0)) ] "category")
-    case m of
-      Just c -> do
-        modify (select [ "id" =: String (U.toText (unCategoryId cid0)) ] "category")
-          [ "isTrash" =: Bool True ]
-        insert "category" (exclude ["id"] c ++ ["id" =: String (U.toText (unCategoryId cid1))])
-        return ()
+    m <- findOne (select [ "id" =: val cid0 ] "category")
+    void . runMaybeT $ do
+      d <- MaybeT $ findOne (select [ "id" =: val cid0 ] "category")
+      c <- MaybeT . return $ cast' (Doc d)
+      lift . insert "category" . doc . val $ c { categoryId = cid1 }
 
 
   -- TODO remaining saveChange cases
