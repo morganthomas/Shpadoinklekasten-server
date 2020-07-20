@@ -8,6 +8,7 @@
 , strictDeps ? false
 , isJS ? false
 , asShell ? false
+, localLib ? false
 }:
 let
 
@@ -15,14 +16,21 @@ let
   # It's a shpadoinkle day
   shpadoinkle = builtins.fetchGit {
     url    = https://gitlab.com/fresheyeball/Shpadoinkle.git;
-    rev    = "77a56850ab7897f28b107a729cff893e74dd15bd";
+    rev    = "d9bc6099ed5ef196b073267c2c737e9ed5d49b98";
     ref    = "master";
   };
 
 
-  Shpadoinklekasten-lib-src = builtins.fetchGit {
+  Shpadoinklekasten-lib-src = if localLib then ../lib else builtins.fetchGit {
     url    = ssh://git@github.com/morganthomas/Shpadoinklekasten-lib.git;
-    rev    = "b9896a270062531a5e94ea21af3bb54ce12ccdc9";
+    rev    = "363b5544d63c292c2b2cdfa336ba647c19743bf0";
+    ref    = "algebra";
+  };
+
+
+  next-uuid-src = builtins.fetchGit {
+    url    = https://github.com/morganthomas/next-uuid.git;
+    rev    = "ddcea7d70a01bf667c2ec3d82cef46e4b6852499";
     ref    = "master";
   };
 
@@ -63,9 +71,10 @@ let
     jsaddle = hsuper.jsaddle;
     mongoDB = hsuper.mongoDB;
     network = hsuper.network;
+    next-uuid = hself.callCabal2nix "next-uuid" next-uuid-src {};
     raw-strings-qq = hsuper.raw-strings-qq;
-    Shpadoinkle-continuations = hsuper.Shpadoinkle-continuations;
-    Shpadoinklekasten-lib = hself.callCabal2nix "Shpadoinklekasten-lib" "${Shpadoinklekasten-lib-src}" {};    transformers = hsuper.transformers;
+    Shpadoinklekasten-lib = hself.callCabal2nix "Shpadoinklekasten-lib" Shpadoinklekasten-lib-src {};
+    transformers = hsuper.transformers;
     unliftio = hsuper.unliftio;
   };
 

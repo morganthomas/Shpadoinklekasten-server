@@ -2,18 +2,25 @@
 {-# LANGUAGE OverloadedStrings    #-}
 {-# LANGUAGE ExtendedDefaultRules #-}
 {-# LANGUAGE FlexibleInstances    #-}
+{-# LANGUAGE ScopedTypeVariables  #-}
 {-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE ViewPatterns         #-}
 
 
 module Persist where
 
 
-import           Control.Monad (join, void)
+import           Control.Applicative ((<|>))
+import           Control.Monad (join, void, forM_)
 import           Control.Monad.IO.Class
+import           Control.Monad.Trans.Class
+import           Control.Monad.Trans.Maybe
 import           Database.MongoDB
+import           Data.List (uncons)
 import qualified Data.Map as M
 import           Data.Maybe (catMaybes, fromMaybe)
-import           Data.Text hiding (foldl, null, find)
+import qualified Data.Set as S
+import           Data.Text hiding (foldl, null, find, uncons, takeWhile, dropWhile, filter)
 import           Data.Text.Encoding (encodeUtf8)
 import           Data.Time.Calendar
 import           Data.Time.LocalTime
@@ -23,153 +30,298 @@ import           System.Random (randomIO)
 import           Types
 
 
+now :: Action IO Day
+now = liftIO $ localDay . zonedTimeToLocalTime <$> getZonedTime
+
+
+doc :: Value -> Document
+doc (Doc d) = d
+
+
 instance ZettelEditor (Action IO) where
 
-  saveNewCategory i t sid = do
+  saveChange (NewCategory i t) sid = do
     _ <- validateSession sid
-    void $ insert "category"
-      [ "id" =: String (unCategoryId i)
-      , "title" =: String t
-      , "threads" =: Array [] ]
+    _ <- insert "category" . doc . val $ Category t i [] Nothing False
+    modify (select [] "categoryOrdering") [ "$push" =: Doc [ "categoryIds" =: i ] ]
 
 
-  saveNewThread i t ls cs sid = do
+  saveChange (NewThread ic it t) sid = do
     s <- validateSession sid
-    c <- liftIO $ localDay . zonedTimeToLocalTime <$> getZonedTime
-    insert "thread"
-      [ "id" =: String (unThreadId i)
-      , "title" =: String t
-      , "author" =: String (unUserId (sessionUser s))
-      , "created" =: dayToDoc c
-      , "comments" =: Array []
-      , "links" =: Array
-        ((\l -> Doc
-                [ "to" =: String (unThreadId (linkTo l))
-                , "description" =: String (linkDescription l) ])
-         <$> ls)
-      , "categorization" =: Array (String . unCategoryId <$> cs) ]
-
-    modify (select [ "id" =: Doc [ "$in" =: (String . unCategoryId <$> cs) ] ] "category")
-      [ "$push" =: Doc [ "threads" =: String (unThreadId i) ] ]
+    n <- now
+    _ <- insert "thread" . doc . val $ Thread it t (sessionUser s) n [] [ic] Nothing
+    modify (select [ "id" =: ic ] "category") [ "$push" =: Doc [ "threads" =: it ] ]
 
 
-  saveNewComment tid t sid = do
+  saveChange (NewComment it ic t) sid = do
     s <- validateSession sid
-    c <- liftIO $ localDay . zonedTimeToLocalTime <$> getZonedTime
-    modify (select [ "id" =: String (unThreadId tid) ] "thread")
-      [ "$push" =: Doc [ "comments" =: Doc
-                         [ "author" =: String (unUserId (sessionUser s))
-                         , "created" =: dayToDoc c
-                         , "text" =: String t ] ] ]
+    n <- now
+    modify (select [ "id" =: it ] "thread") [ "$push" =: Doc [ "comments" =: ic ] ]
+    void . insert "comment" . doc . val $ Comment ic (sessionUser s) n [Edit n t]
+
+
+  saveChange (AddThreadToCategory cid tid) sid = do
+    s <- validateSession sid
+    modify (select [ "id" =: cid ] "category") [ "$push" =: Doc [ "threads" =: tid ] ]
+    modify (select [ "id" =: tid ] "thread") [ "$push" =: Doc [ "categorization" =: cid ] ]
+
+
+  saveChange (RemoveThreadFromCategory cid tid) sid = do
+    s <- validateSession sid
+    modify (select [ "id" =: cid ] "category") [ "$pull" =: Doc [ "threads" =: tid ] ]
+    modify (select [ "id" =: tid ] "thread") [ "$pull" =: Doc [ "categorization" =: cid ] ]
+
+
+  saveChange (RetitleCategory cid0 cid1 txt) sid = do
+    s <- validateSession sid
+    void . runMaybeT $ do
+      cd <- MaybeT . findOne $ select [ "id" =: cid0 ] "category"
+      c  <- MaybeT . return $ cast' (Doc cd)
+      lift . insert "category" . doc . val $ c { categoryId = cid1, categoryTitle = txt }
+      lift $ modify (select [ "id" =: cid0 ] "category") [ "isTrash" =: True ]
+      od <- MaybeT . findOne $ select [] "categoryOrdering"
+      o  <- MaybeT . return $ od !? "categoryIds" >>= cast'
+      let o' :: [CategoryId] = (\cid -> if cid == cid0 then cid1 else cid) <$> o
+      lift $ modify (select [] "categoryOrdering") [ "categoryIds" =: o' ]
+
+
+  saveChange (RetitleThread tid0 tid1 txt) sid = do
+    s <- validateSession sid
+    void . runMaybeT $ do
+      d <- MaybeT . findOne $ select [ "id" =: tid0 ] "thread"
+      t <- MaybeT . return $ cast' (Doc d)
+      lift . insert "thread" . doc. val $ t { threadId = tid1, threadTitle = txt }
+      lift $ modify (select [ "id" =: Doc [ "$in" =: val <$> categorization t ] ] "category")
+        [ "$pull" =: tid0, "$push" =: tid1 ]
+      lift $ modify (select [] "trashcan") [ "$push" =: Doc [ "threadIds" =: tid0 ] ]
+
+
+  saveChange (RemoveComment tid0 tid1 cid) sid = do
+    s <- validateSession sid
+    void . runMaybeT $ do
+      d <- MaybeT . findOne $ select [ "id" =: tid0 ] "thread"
+      t <- MaybeT . return $ cast' (Doc d)
+      let t' = t { threadId = tid0
+                 , threadCommentIds = Prelude.filter (/= cid) (threadCommentIds t) }
+      lift . insert "thread" . doc . val $ t'
+      lift $ modify (select [ "id" =: Doc [ "$in" =: categorization t ] ] "category")
+        [ "$pull" =: Doc [ "threadIds" =: tid0 ], "$push" =: Doc [ "threadIds" =: tid1 ] ]
+      lift $ modify (select [] "trashcan") [ "$push" =: Doc [ "threadIds" =: tid0 ] ]
+
+
+  saveChange (TrashCategory cid) sid = do
+    s <- validateSession sid
+    modify (select [ "id" =: cid ] "category") [ "isTrash" =: True ]
+    void . runMaybeT $ do
+      d <- MaybeT . findOne $ select [] "categoryOrdering"
+      o <- MaybeT . return $ d !? "categoryIds" >>= cast'
+      let o' = filter (/= cid) o
+      lift $ modify (select [] "categoryOrdering") [ "categoryIds" =: o' ]
+
+
+  saveChange (UntrashCategory cid) sid = do
+    s <- validateSession sid
+    modify (select [ "id" =: cid ] "category") [ "isTrash" =: False ]
+    void . runMaybeT $ do
+      d <- MaybeT . findOne $ select [] "categoryOrdering"
+      o <- MaybeT . return $ d !? "categoryIds" >>= cast'
+      let o' = o ++ [cid]
+      lift $ modify (select [] "categoryOrdering") [ "categoryIds" =: o' ]
+
+
+  saveChange (SplitThread tid0 tid1 tid2 cid) sid = do
+    s <- validateSession sid
+    n <- now
+    void . runMaybeT $ do
+      dt <- MaybeT . findOne $ select [ "id" =: tid0 ] "thread"
+      t0 <- MaybeT . return $ cast' (Doc dt)
+      dc <- MaybeT . findOne $ select [ "id" =: cid ] "comment"
+      c  <- MaybeT . return $ cast' (Doc dc)
+      let cs0 = threadCommentIds t0
+      let cs1 = takeWhile (/= cid) cs0
+      cs2 <- MaybeT . return . fmap snd . uncons $ dropWhile (/= cid) cs0
+      let t1 = Thread tid1 (threadTitle t0) (sessionUser s) n cs1 (categorization t0) (Just tid0)
+      let t2 = Thread tid2 (commentText c) (sessionUser s) n cs2 (categorization t0) (Just tid0)
+      lift . insert "thread" . doc . val $ t1
+      lift . insert "thread" . doc . val $ t2
+      lift $ modify (select [ "id" =: Doc [ "$in" =: val <$> categorization t0 ] ] "category")
+        [ "$pull" =: Doc [ "threadIds" =: tid0 ]
+        , "$push" =: Doc [ "threadIds" =: Array [ val tid1, val tid2 ] ] ]
+      lift $ modify (select [] "trashcan") [ "$push" =: Doc [ "threadIds" =: tid0 ] ]
+
+
+  saveChange (AddCommentToThread tid cid) sid = do
+    s <- validateSession sid
+    modify (select [ "id" =:tid ] "thread") [ "$push" =: Doc [ "commentIds" =: cid ] ]
+
+
+  saveChange (AddCommentRangeToThread tid0 cid0 cidN tid1) sid = do
+    s <- validateSession sid
+    void . runMaybeT $ do
+      d  <- MaybeT . findOne $ select [ "id" =: tid0 ] "thread"
+      t0 <- MaybeT . return $ cast' (Doc d)
+      let cs = (++ [cidN]) . takeWhile (/= cidN) . dropWhile (/= cid0) $ threadCommentIds t0
+      lift $ modify (select [ "id" =: tid1 ] "thread") [ "$push" =: Doc [ "commentIds" =: cs ] ]
+
+
+  saveChange (MoveCategory cid i) sid = do
+    s <- validateSession sid
+    void . runMaybeT $ do
+      d <- MaybeT . findOne $ select [] "categoryOrdering"
+      o <- MaybeT . return $ d !? "categoryIds" >>= cast'
+      let o' :: [CategoryId] = insertAt i cid $ filter (/= cid) o
+      lift $ modify (select [] "categoryOrdering") [ "categoryIds" =: o' ]
+
+
+  saveChange (MoveComment tid cid i) sid = do
+    s <- validateSession sid
+    void . runMaybeT $ do
+      d <- MaybeT . findOne $ select [ "id" =: tid ] "thread"
+      t <- MaybeT . return $ cast' (Doc d)
+      let cs = insertAt i cid $ filter (/= cid) (threadCommentIds t)
+      lift $ modify (select [ "id" =: tid ] "thread") [ "commentIds" =: cs ]
+
+
+  saveChange (MoveThread cid tid i) sid = do
+    s <- validateSession sid
+    void . runMaybeT $ do
+      d <- MaybeT . findOne $ select [ "id" =: cid ] "category"
+      c <- MaybeT . return $ cast' (Doc d)
+      let ts = insertAt i tid $ filter (/= tid) (categoryThreadIds c)
+      lift $ modify (select [ "id" =: cid ] "category") [ "threadIds" =: ts ]
+
+
+  saveChange (NewRelationLabel l) sid = do
+    s <- validateSession sid
+    void . insert "relationLabel" . doc $ val l
+
+
+  saveChange (DeleteRelationLabel l) sid = do
+    s <- validateSession sid
+    delete $ select (doc (val l)) "relationLabel"
+
+
+  saveChange (NewRelation r) sid = do
+    s <- validateSession sid
+    void . insert "relation" . doc $ val r
+
+
+  saveChange (DeleteRelation r) sid = do
+    s <- validateSession sid
+    delete $ select (doc (val r)) "relation"
+
+
+  saveChange (ComposedChanges cs) sid = forM_ cs (\c -> saveChange c sid)
 
 
   getDatabase sid = do
-    s       <- validateSession sid
-    catCur  <- find (select [] "category")
-    cats    <- collect CategoryId parseCategory mempty catCur
-    thCur   <- find (select [] "thread")
-    threads <- collect ThreadId parseThread mempty thCur
-    usCur   <- find (select [] "user")
-    users   <- collect UserId parseUser mempty usCur
-    return (Zettel cats threads users (Just s))
+    s         <- validateSession sid
+    catCur    <- find (select [] "category")
+    cats      <- collectMap (fmap CategoryId . U.fromText) parseCategory mempty catCur
+    catOrd    <- fromMaybe [] . fmap (fmap (CategoryId)) . join . fmap sequence . fmap (fmap (U.fromText))
+                   . join . fmap cast' . join . fmap (!? "categoryIds")
+                 <$> findOne (select [] "categoryOrdering")
+    thCur     <- find (select [] "thread")
+    threads   <- collectMap (fmap ThreadId . U.fromText) parseThread mempty thCur
+    trashCur  <- find (select [] "trashcan")
+    trash     <- collectSet (fmap ThreadId . join . fmap U.fromText . join . fmap cast' . (!? "threadId"))
+                 mempty trashCur
+    comCur    <- find (select [] "comment")
+    comments  <- collectMap (fmap CommentId . U.fromText) parseComment mempty comCur
+    lblCur    <- find (select [] "relationLabel")
+    labels    <- collectSet parseRelationLabel mempty lblCur
+    relCur    <- find (select [] "relation")
+    relations <- collectSet parseRelation mempty relCur
+    usCur     <- find (select [] "user")
+    users     <- collectMap (Just . UserId) parseUser mempty usCur
+    return (Zettel cats catOrd threads trash comments labels relations users (Just s))
 
 
   login uid p = do
     mu  <- findOne (select ["id" =: String (unUserId uid)] "user")
-    sid <- SessionId . U.toText <$> liftIO randomIO
-    c   <- liftIO $ localDay . zonedTimeToLocalTime <$> getZonedTime
+    sid <- SessionId <$> liftIO randomIO
+    n   <- now
     case mu of
       Nothing -> return Nothing
       Just u -> do
         case PasswordHash <$> (u !? "pwhash" >>= cast') of
           Just h | h == p -> do
                      insert "session"
-                       [ "id" =: String (unSessionId sid)
-                       , "user" =: String (unUserId uid)
-                       , "created" =: dayToDoc c ]
-                     return . Just $ Session sid uid c
+                       [ "id" =: sid
+                       , "user" =: uid
+                       , "created" =: dayToGreg n ]
+                     return . Just $ Session sid uid n
           _ -> return Nothing
 
 
-collect :: Ord id => (Text -> id) -> (Document -> Maybe a) -> M.Map id a -> Cursor -> Action IO (M.Map id a)
-collect toId parse m cur = do
+collectMap :: Ord id => (Text -> Maybe id) -> (Document -> Maybe a) -> M.Map id a -> Cursor -> Action IO (M.Map id a)
+collectMap toId parse m cur = do
   docs <- nextBatch cur
   let addDoc m d = fromMaybe m $ do
-        i <- toId <$> (d !? "id" >>= cast')
+        i <- d !? "id" >>= cast' >>= toId
         x <- parse d
         return (M.insert i x m)
   let m' = foldl addDoc m docs
-  if Prelude.null docs then return m' else collect toId parse m' cur
+  if Prelude.null docs then return m' else collectMap toId parse m' cur
+
+
+collectSet :: Ord a => (Document -> Maybe a) -> S.Set a -> Cursor -> Action IO (S.Set a)
+collectSet parse s cur = do
+  docs <- nextBatch cur
+  let addDoc s d = fromMaybe s $ flip S.insert s <$> parse d
+  let s' = foldl addDoc s docs
+  if Prelude.null docs then return s' else collectSet parse s' cur
+
+
+parseRelationLabel :: Document -> Maybe RelationLabel
+parseRelationLabel d = parseSymmetric <|> parseAsymmetric
+  where parseSymmetric = SymmL . SymmL' <$> d !? "symmetric"
+        parseAsymmetric = do
+          l <- d !? "left"
+          r <- d !? "right"
+          return . AsymL $ AsymL' l r
+
+
+parseRelation :: Document -> Maybe Relation
+parseRelation d = parseSymmetric <|> parseAsymmetric
+  where parseSymmetric = Symm <$>
+          do l <- d !? "label" >>= cast'
+             m <- l !? "symmetric"
+             f <- d !? "from" >>= cast' >>= U.fromText
+             t <- d !? "to" >>= cast' >>= U.fromText
+             return (Rel (SymmL' m) (ThreadId f, ThreadId t))
+
+        parseAsymmetric = Asym <$>
+          do l <- d !? "label" >>= cast'
+             m <- l !? "left"
+             n <- l !? "right"
+             f <- d !? "from" >>= cast' >>= U.fromText
+             t <- d !? "to" >>= cast' >>= U.fromText
+             return (Rel (AsymL' m n) (ThreadId f, ThreadId t))
 
 
 parseCategory :: Document -> Maybe Category
-parseCategory d = do
-  t  <- d !? "title" >>= cast'
-  i  <- CategoryId <$> (d !? "id" >>= cast')
-  ts <- d !? "threads" >>= cast'
-  return (Category t i (ThreadId <$> ts))
-
+parseCategory = cast' . Doc
 
 parseUser :: Document -> Maybe UserProfile
-parseUser d = do
-  i <- UserId <$> (d !? "id" >>= cast')
-  n <- d !? "fullName" >>= cast'
-  e <- d !? "email" >>= cast'
-  c <- d !? "created" >>= cast' >>= parseDay
-  return (UserProfile i n e c)
-
-
-parseLink :: Document -> Maybe Link
-parseLink d = do
-  t <- ThreadId <$> (d !? "to" >>= cast')
-  e <- d !? "description" >>= cast'
-  return (Link t e)
-
+parseUser = cast' . Doc
 
 parseComment :: Document -> Maybe Comment
-parseComment d = do
-  a <- UserId <$> (d !? "author" >>= cast')
-  c <- d !? "created" >>= cast' >>= parseDay
-  t <- d !? "text" >>= cast'
-  return (Comment a c t)
+parseComment = cast' . Doc
 
+parseEdit :: Document -> Maybe Edit
+parseEdit = cast' . Doc
 
 parseThread :: Document -> Maybe Thread
-parseThread d = do
-  i  <- ThreadId <$> (d !? "id" >>= cast')
-  t  <- d !? "title" >>= cast'
-  a  <- UserId <$> (d !? "author" >>= cast')
-  c  <- d !? "created" >>= cast' >>= parseDay
-  ls <- d !? "links" >>= cast'
-  ts <- d !? "comments" >>= cast'
-  cs <- d !? "categorization" >>= cast'
-  return (Thread i t a c (catMaybes $ parseComment <$> ts) (catMaybes $ parseLink <$> ls) (CategoryId <$> cs))
-
-
-parseDay :: Document -> Maybe Day
-parseDay doc = do
-  d <- doc !? "day" >>= cast'
-  m <- doc !? "month" >>= cast'
-  y <- doc !? "year" >>= cast'
-  return (fromGregorian y m d)
-
-
-dayToDoc :: Day -> Document
-dayToDoc day = let (y, m, d) = toGregorian day in [ "year" =: y, "month" =: m, "day" =: d ]
-
+parseThread = cast' . Doc
 
 parseSession :: Document -> Maybe Session
-parseSession d = do
-  sid <- SessionId <$> (d !? "id" >>= cast')
-  uid <- UserId <$> (d !? "user" >>= cast')
-  c   <- d !? "created" >>= cast' >>= parseDay
-  return (Session sid uid c)
-
+parseSession = cast' . Doc
 
 validateSession :: SessionId -> Action IO Session
 validateSession sid = do
   -- TODO: make sessions expire
-  ms <- join . fmap parseSession <$> findOne (select ["id" =: String (unSessionId sid)] "session")
+  ms <- join . fmap parseSession <$> findOne (select ["id" =: String (U.toText (unSessionId sid))] "session")
   case ms of
     Just s -> return s
     Nothing -> fail "invalid session"
