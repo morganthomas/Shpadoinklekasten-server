@@ -240,17 +240,17 @@ instance ZettelEditor (Action IO) where
   login uid p = do
     mu  <- findOne (select ["id" =: String (unUserId uid)] "user")
     sid <- SessionId <$> liftIO randomIO
-    c   <- liftIO $ localDay . zonedTimeToLocalTime <$> getZonedTime
+    n   <- now
     case mu of
       Nothing -> return Nothing
       Just u -> do
         case PasswordHash <$> (u !? "pwhash" >>= cast') of
           Just h | h == p -> do
                      insert "session"
-                       [ "id" =: String (U.toText (unSessionId sid))
-                       , "user" =: String (unUserId uid)
-                       , "created" =: dayToDoc c ]
-                     return . Just $ Session sid uid c
+                       [ "id" =: sid
+                       , "user" =: uid
+                       , "created" =: dayToGreg n ]
+                     return . Just $ Session sid uid n
           _ -> return Nothing
 
 
@@ -301,71 +301,22 @@ parseRelation d = parseSymmetric <|> parseAsymmetric
 
 
 parseCategory :: Document -> Maybe Category
-parseCategory d = do
-  t  <- d !? "title" >>= cast'
-  i  <- CategoryId <$> (d !? "id" >>= cast' >>= U.fromText)
-  ts <- fmap ThreadId <$> (d !? "threads" >>= cast' >>= sequence . fmap U.fromText)
-  let f = CategoryId <$> (d !? "from" >>= cast' >>= U.fromText)
-  tr <- d !? "isTrash" >>= cast'
-  return (Category t i ts f tr)
-
+parseCategory = cast' . Doc
 
 parseUser :: Document -> Maybe UserProfile
-parseUser d = do
-  i <- UserId <$> (d !? "id" >>= cast')
-  n <- d !? "fullName" >>= cast'
-  e <- d !? "email" >>= cast'
-  c <- d !? "created" >>= cast' >>= parseDay
-  return (UserProfile i n e c)
-
+parseUser = cast' . Doc
 
 parseComment :: Document -> Maybe Comment
-parseComment d = do
-  i <- CommentId <$> (d !? "id" >>= cast' >>= U.fromText)
-  a <- UserId <$> (d !? "author" >>= cast')
-  c <- d !? "created" >>= cast' >>= parseDay
-  e <- d !? "edits" >>= cast' >>= sequence . fmap (parseEdit)
-  return (Comment i a c e)
-
+parseComment = cast' . Doc
 
 parseEdit :: Document -> Maybe Edit
-parseEdit d = do
-  c <- d !? "created" >>= cast' >>= parseDay
-  t <- d !? "text" >>= cast'
-  return (Edit c t)
-
+parseEdit = cast' . Doc
 
 parseThread :: Document -> Maybe Thread
-parseThread d = do
-  i  <- ThreadId <$> (d !? "id" >>= cast' >>= U.fromText)
-  t  <- d !? "title" >>= cast'
-  a  <- UserId <$> (d !? "author" >>= cast')
-  c  <- d !? "created" >>= cast' >>= parseDay
-  ts <- fmap CommentId <$> (d !? "comments" >>= cast' >>= sequence . fmap U.fromText)
-  cs <- fmap CategoryId <$> (d !? "categorization" >>= cast' >>= sequence . fmap U.fromText)
-  let f = ThreadId <$> (d !? "createdFrom" >>= cast' >>= U.fromText)
-  return (Thread i t a c ts cs f)
-
-
-parseDay :: Document -> Maybe Day
-parseDay doc = do
-  d <- doc !? "day" >>= cast'
-  m <- doc !? "month" >>= cast'
-  y <- doc !? "year" >>= cast'
-  return (fromGregorian y m d)
-
-
-dayToDoc :: Day -> Document
-dayToDoc day = let (y, m, d) = toGregorian day in [ "year" =: y, "month" =: m, "day" =: d ]
-
+parseThread = cast' . Doc
 
 parseSession :: Document -> Maybe Session
-parseSession d = do
-  sid <- SessionId <$> (d !? "id" >>= cast' >>= U.fromText)
-  uid <- UserId <$> (d !? "user" >>= cast')
-  c   <- d !? "created" >>= cast' >>= parseDay
-  return (Session sid uid c)
-
+parseSession = cast' . Doc
 
 validateSession :: SessionId -> Action IO Session
 validateSession sid = do
