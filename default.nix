@@ -8,6 +8,7 @@
 , strictDeps ? false
 , isJS ? false
 , asShell ? false
+, localLib ? false
 }:
 let
 
@@ -20,7 +21,7 @@ let
   };
 
 
-  Shpadoinklekasten-lib-src = builtins.fetchGit {
+  Shpadoinklekasten-lib-src = if localLib then ../lib else builtins.fetchGit {
     url    = ssh://git@github.com/morganthomas/Shpadoinklekasten-lib.git;
     rev    = "363b5544d63c292c2b2cdfa336ba647c19743bf0";
     ref    = "algebra";
