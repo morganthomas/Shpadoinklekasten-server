@@ -15,16 +15,16 @@ let
 
   # It's a shpadoinkle day
   shpadoinkle = builtins.fetchGit {
-    url    = https://gitlab.com/fresheyeball/Shpadoinkle.git;
-    rev    = "d9bc6099ed5ef196b073267c2c737e9ed5d49b98";
-    ref    = "master";
+    url    = https://gitlab.com/morganthomas/Shpadoinkle.git;
+    rev    = "84e0108283c3226ac3e49d1e47b6359eace38c4a";
+    ref    = "router-extension";
   };
 
 
   Shpadoinklekasten-lib-src = if localLib then ../lib else builtins.fetchGit {
     url    = ssh://git@github.com/morganthomas/Shpadoinklekasten-lib.git;
-    rev    = "363b5544d63c292c2b2cdfa336ba647c19743bf0";
-    ref    = "algebra";
+    rev    = "9334887a3725cd97f9342a663df307ac8f368527";
+    ref    = "master";
   };
 
 
