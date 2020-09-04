@@ -59,6 +59,10 @@ instance ZettelEditor (Action IO) where
     modify (select [ "id" =: it ] "thread") [ "$push" =: Doc [ "comments" =: ic ] ]
     void . insert "comment" . doc . val $ Comment ic (sessionUser s) n [Edit n t]
 
+  saveChange (NewEdit ic t) sid = do
+    s <- validateSession sid
+    n <- now
+    modify (select [ "id" =: ic ] "comment") [ "$push" =: Doc [ "edits" =: (Edit n t) ] ]
 
   saveChange (AddThreadToCategory cid tid) sid = do
     s <- validateSession sid
