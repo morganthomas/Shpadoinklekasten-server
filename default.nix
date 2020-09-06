@@ -22,9 +22,9 @@ let
 
 
   Shpadoinklekasten-lib-src = if localLib then ../lib else builtins.fetchGit {
-    url    = https://github.com/morganthomas/Shpadoinklekasten-lib.git;
-    rev    = "df8e6deec4f008dd1550c07e68bbe77f4ba1787f";
-    ref    = "master";
+    url    = https://github.com/davewripley/Shpadoinklekasten-lib.git;
+    rev    = "8da3fe376dc3222bd1bfbb4a2d2beda630be5589";
+    ref    = "edit-comments";
   };
 
 
