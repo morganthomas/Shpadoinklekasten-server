@@ -23,6 +23,7 @@ import qualified Data.Set as S
 import           Data.Text hiding (foldl, null, find, uncons, takeWhile, dropWhile, filter)
 import           Data.Text.Encoding (encodeUtf8)
 import           Data.Time.Calendar
+import           Data.Time.Clock (UTCTime (..), getCurrentTime)
 import           Data.Time.LocalTime
 import           Data.UUID as U
 import           System.Random (randomIO)
@@ -30,8 +31,8 @@ import           System.Random (randomIO)
 import           Types
 
 
-now :: Action IO Day
-now = liftIO $ localDay . zonedTimeToLocalTime <$> getZonedTime
+now :: Action IO UTCTime
+now = liftIO getCurrentTime 
 
 
 doc :: Value -> Document
@@ -253,7 +254,7 @@ instance ZettelEditor (Action IO) where
                      insert "session"
                        [ "id" =: sid
                        , "user" =: uid
-                       , "created" =: dayToGreg n ]
+                       , "created" =: n ]
                      return . Just $ Session sid uid n
           _ -> return Nothing
 
