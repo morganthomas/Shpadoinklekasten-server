@@ -40,6 +40,6 @@ server js conn = serve (Proxy @(SPA :<|> API)) $ app js :<|> api conn
 main :: IO ()
 main = do
   js <- readFile "./assets/all.js"
-  conn <- connect (Host "localhost" (PortNumber 27017))
+  conn <- connect (Host "127.0.0.1" (PortNumber 27017))
   putStrLn "listening on port 8080"
   run 8080 (server (sha256_js <> pack js) conn)
